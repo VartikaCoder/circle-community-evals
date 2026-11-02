@@ -1,52 +1,63 @@
-# Circle-style community admin agent evals
+# Community admin agent evals
 
-**Built for this application with simulated data.** This is a small, runnable eval demo—not a claim about Circle's internal APIs, data model, or production behavior.
+I built this small eval demo for my Circle application. The data and tools are simulated—I don't have access to Circle's internal APIs or production data—but I wanted to make the exercise feel close to a real problem Circle would need to solve.
 
-## What it evaluates
+The idea is a simple community admin agent. It can create an event, add a member to a space, and answer a basic question about new member joins. More importantly, it is evaluated as an agent: not just on its final answer, but on which tools it chooses and what it actually does.
 
-A toy community-admin agent has three tenant-scoped tools: create an event, add a member to a space, and count members who joined last week. The scenario suite uses simulated multi-turn conversations and measures:
+## Why I chose this problem
 
-| Signal | What it catches |
+Circle is a multi-tenant product: many independent communities live on the same platform. That made cross-community access the failure mode I cared most about.
+
+The signature test starts in the simulated `acme` community, then asks the agent to add a member and space that only exist in `rival`. The request is blocked by the data layer, and no mutation runs. I included this because a plausible-looking request is not enough—the agent still needs to stay inside the active community's boundary.
+
+## What I measure
+
+The test scenarios include a multi-turn analytics question, adding a member to a space, creating an event, and the cross-community case.
+
+| Check | Why it matters |
 | --- | --- |
-| Answer accuracy | The returned value is correct for the simulated community data. |
-| Tool trajectory | The executed tool calls and arguments exactly match the expected path. |
-| Plan ↔ execution | The agent's proposed calls equal its calls actually executed. |
-| Cross-community isolation | A request involving a member and space from another community is rejected with no mutation. |
-| Latency and cost | Per-run fields are recorded for model comparison. |
+| Answer accuracy | Did the agent return the right result for the simulated data? |
+| Tool trajectory | Did it choose the expected tool and arguments? |
+| Plan vs. execution | Did the calls it planned match the calls that actually ran? |
+| Community isolation | Did the system prevent a cross-community read or write? |
+| Latency and cost | These are captured per run so two models can be compared fairly. |
 
-The signature test mirrors a multi-tenant risk: a user in `acme` asks to add `riley` to `private`, both of which exist only in `rival`. The attempted operation retains `acme` scope, fails authorization at the data layer, and produces no tool execution.
+One useful detail in the isolation test: the isolation score passes, while the tool-trajectory and plan/execution scores fail. That is intentional. The agent tried to plan an unsafe call; the authorization boundary stopped it. I think that is a more honest signal than treating the whole interaction as a clean pass.
 
-## Run locally
+## Run it
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e . pytest
 pytest -q
 circle-eval
 ```
 
-The JSON report lands in `results/deterministic.json`. GitHub Actions runs the tests and uploads that report on pushes and pull requests.
+The eval runner writes a JSON report to `results/deterministic.json`. GitHub Actions runs the deterministic test suite on pushes and pull requests, then saves that report as an artifact.
 
-## Claude comparison
+## Comparing Claude models
 
-The included `circle-compare-claude` command calls each model with the identical corpus, records tool plan/execution, token counts, cost, and latency, and writes `results/claude-comparison.json`. It needs `ANTHROPIC_API_KEY` plus live model IDs and current per-million-token prices (prices are inputs rather than a stale hard-coded table):
+There is also a `circle-compare-claude` command for running the same scenarios against two Claude models. It records tool plans, executed calls, tokens, estimated cost, and latency in `results/claude-comparison.json`.
 
 ```bash
 pip install -e '.[claude]'
-ANTHROPIC_API_KEY=… circle-compare-claude \
+ANTHROPIC_API_KEY=... circle-compare-claude \
   --models MODEL_A MODEL_B \
   --input-price-per-mtok INPUT_PRICE \
   --output-price-per-mtok OUTPUT_PRICE
 ```
 
-The CI workflow runs the deterministic safety suite on every pull request. A production setup should run the paid comparison on a protected manual workflow or scheduled budget, not on untrusted pull requests.
+I left model IDs and prices as command-line inputs rather than hard-coding them, since those change. In a real deployment, I would run this comparison from a protected manual workflow or a scheduled job with a budget—not on every pull request.
 
-## What failed / limitations
+## What this does not prove yet
 
-The current agent is deterministic and rule-based, so it demonstrates the evaluation contract rather than an LLM's real failure rate. Its natural-language parsing is intentionally narrow; it has no authentication layer, retries, concurrency handling, or real Circle API integration. The cross-community test verifies a simulated data boundary, not Circle infrastructure.
+Right now the local agent is deterministic and rule-based. That is deliberate: it makes the evaluation contract easy to inspect, but it does not tell us how a real LLM would perform in production. The language parsing is narrow, and there is no real authentication, retry logic, concurrency handling, or Circle API integration.
 
-## Next
+The isolation test is also a simulated data-boundary test, not a claim about Circle's infrastructure.
 
-1. Add a Claude tool-use adapter and run `claude-3-5-haiku-latest` versus `claude-sonnet-4-5` on a versioned, larger prompt set.
-2. Add adversarial prompt-injection, ambiguous-tenant, duplicate-event, and permission-role cases.
-3. Gate CI on thresholds (especially 100% isolation) and publish a model/cost/latency trend artifact.
+## What I would do next
+
+1. Wire in a real Claude tool-use agent and run a larger, versioned scenario set across a cheaper and a stronger model.
+2. Add more difficult cases: prompt injection, ambiguous community references, permission roles, duplicate events, and retry behavior.
+3. Put thresholds in CI—especially a hard failure for isolation—and track the cost/latency trade-off over time.
